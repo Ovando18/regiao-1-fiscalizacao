@@ -128,7 +128,11 @@ As dependências vêm do `requirements.txt` e o tema vem do `.streamlit/config.t
 - **Portais dinâmicos** (Betha Cloud, Atende.net, Elotech e outros SPAs em JavaScript) não entregam os
   dados em HTML estático. O painel verifica se o portal está no ar e o marca como **Acesso Manual**, com o
   link direto.
-- **Fiorilli SCPI**: o coletor tenta primeiro a listagem `VersaoJson/Contratos` e depois o HTML.
+- **Fiorilli SCPI** (ASP.NET): o coletor abre a página inicial para criar a sessão, carrega
+  `InformacoesContratos.ASPX` e aciona o botão “Exportar dados para .JSON”, que traz todos os contratos
+  do exercício de uma vez. O portal não informa a data de assinatura, então o painel usa o início da
+  vigência. Os documentos (contrato, OS e empenho) ficam em abas internas do portal e são abertos pelo
+  link “Portal Municipal”.
 - **Demais provedores**: o coletor lê as tabelas de contratos da página e, se não houver nenhuma, segue o
   menu “Contratos”. Também visita até 20 páginas de detalhe por município para localizar a OS e o Empenho.
 - **Certificados TLS** inválidos são comuns em portais municipais. A verificação fica ligada por padrão.

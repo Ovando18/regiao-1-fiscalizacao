@@ -5,6 +5,7 @@ Execute:  python -m pytest -q
 from __future__ import annotations
 
 import http.server
+import json
 import socket
 import threading
 from datetime import date
@@ -41,14 +42,49 @@ DETALHE = """<html><body><h1>Contrato 012/2026</h1><a href="/arquivos/contrato12
 <a href="/arquivos/os12.pdf">Ordem de Serviço</a><a href="/empenhos?contrato=12">Empenhos e pagamentos</a></body></html>"""
 SPA = """<html><head><script src="/app.js"></script></head><body><app-root></app-root></body></html>"""
 
-PAGINAS = {"/": HOME, "/contratos.html": CONTRATOS, "/detalhe/12": DETALHE, "/spa": SPA}
+# Fiorilli SCPI: a tela de contratos só responde com sessão e o export JSON é um postback.
+FIORILLI_HOME = "<html><body><footer>Fiorilli S/C Ltda - SCPI</footer></body></html>"
+FIORILLI_CONTRATOS = """<html><body><form method="post" action="./InformacoesContratos.ASPX">
+<input type="hidden" name="__VIEWSTATE" value="abc"/><input type="hidden" name="__EVENTVALIDATION" value="xyz"/>
+<input type="image" name="ASPxPageControl1$btnExportarJSON" src="x.png"/>
+<table id="ASPxPageControl1_gridContratosLista_DXMainTable"></table></form></body></html>"""
+FIORILLI_JSON = json.dumps([
+    {"CODIGO": "0049/26", "ANO": 2026, "FORNECEDOR": "ECOL ENGENHARIA LTDA", "VALCON": 4254888.0,
+     "VIGENI": "2026-06-02T00:00:00", "VENCIMENTO_ATUAL": "2027-09-02T00:00:00", "INSMF": "15.428.774/0001-95",
+     "OBJETO_COMPLETO": "Contratação de empresa de engenharia para pavimentação asfáltica"},
+    {"CODIGO": "0010/26", "ANO": 2026, "FORNECEDOR": "Mercado X", "VALCON": 900.0,
+     "VIGENI": "2026-02-01T00:00:00", "OBJETO_COMPLETO": "Aquisição de gêneros alimentícios"},
+    {"CODIGO": "0099/25", "ANO": 2025, "FORNECEDOR": "Obras Y", "VALCON": 1.0,
+     "VIGENI": "2025-12-01T00:00:00", "OBJETO_COMPLETO": "Reforma de escola"},
+])
+
+PAGINAS = {"/": HOME, "/contratos.html": CONTRATOS, "/detalhe/12": DETALHE, "/spa": SPA,
+           "/transparencia/": FIORILLI_HOME}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):  # noqa: N802
+        tamanho = int(self.headers.get("Content-Length", 0))
+        corpo = self.rfile.read(tamanho).decode()
+        ok = "btnExportarJSON.x" in corpo and "SESSAO=1" in (self.headers.get("Cookie") or "")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=UTF-8" if ok else "text/html")
+        self.end_headers()
+        self.wfile.write((FIORILLI_JSON if ok else "<html>erro</html>").encode())
+
     def do_GET(self):  # noqa: N802
+        if self.path.lower() == "/transparencia/informacoescontratos.aspx":
+            tem_sessao = "SESSAO=1" in (self.headers.get("Cookie") or "")
+            self.send_response(200 if tem_sessao else 500)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write((FIORILLI_CONTRATOS if tem_sessao else "erro de sessão").encode())
+            return
         corpo = PAGINAS.get(self.path)
         self.send_response(200 if corpo else 404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        if self.path == "/transparencia/":
+            self.send_header("Set-Cookie", "SESSAO=1; Path=/")
         self.end_headers()
         self.wfile.write((corpo or "404").encode())
 
@@ -189,3 +225,30 @@ def test_xlsx_formatado(tmp_path):
     assert ws["J5"].hyperlink.target == "http://x/c.pdf"
     assert ws["K5"].value == "Não disponibilizado"
     assert wb["Resumo_Area1"]["A5"].value == "Simulado"
+
+
+def test_coleta_fiorilli_export_json(portal):
+    # Domínio contendo "transparencia." não pode confundir a raiz do SCPI.
+    from config.provedores import raiz_fiorilli
+    assert raiz_fiorilli("https://transparencia.ivinhema.ms.gov.br/transparencia/") == \
+        "https://transparencia.ivinhema.ms.gov.br/transparencia/"
+
+    mun = {"municipio": "Fiorilli Simulado", "url": portal + "/transparencia/", "provedor": FIORILLI,
+           "url_contratos": ""}
+    contratos, diags = coletar([mun], date(2026, 1, 1), date(2026, 11, 18))
+    assert diags[0]["status"] == STATUS_ONLINE, diags[0]["mensagem"]
+    assert diags[0]["registros_lidos"] == 2  # o contrato de 2025 fica fora do exercício
+    assert [c["numero"] for c in contratos] == ["0049/26"]
+    c = contratos[0]
+    assert c["valor"] == pytest.approx(4254888.0)
+    assert c["data_assinatura"] == date(2026, 6, 2)
+    assert c["vigencia"] == "02/06/2026 a 02/09/2027"
+    assert c["link_portal"] == portal + "/transparencia/"
+
+
+def test_provedor_outro_detectado_pelo_html(portal):
+    mun = {"municipio": "Fiorilli sem pista na URL", "url": portal + "/transparencia/", "provedor": OUTRO,
+           "url_contratos": ""}
+    contratos, diags = coletar([mun], date(2026, 1, 1), date(2026, 11, 18))
+    assert diags[0]["provedor"] == FIORILLI and diags[0]["status"] == STATUS_ONLINE
+    assert len(contratos) == 1

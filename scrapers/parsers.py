@@ -19,6 +19,7 @@ CAMPOS = ("numero", "data_assinatura", "contratada", "cnpj", "objeto", "valor", 
 
 # Ordem importa: "contratada" deve ser testado antes de "numero" (ambos contêm "contrat").
 _REGRAS_CAMPO: list[tuple[str, tuple[str, ...]]] = [
+    ("data_assinatura", ("vigencia inicial", "inicio da vigencia", "inicio vigencia")),
     ("cnpj", ("cnpj", "cpf/cnpj", "cpf_cnpj", "cpfcnpj", "documento do fornecedor", "inscricao")),
     ("contratada", ("contratad", "fornecedor", "empresa", "credor", "razao social", "razaosocial",
                     "favorecido", "nome do fornecedor", "beneficiario")),
@@ -173,6 +174,28 @@ def extrair_registros_html(html: str, base_url: str) -> list[dict]:
                 continue
             reg["_links"] = links_documentos(tr, base_url)
             registros.append(reg)
+    return registros
+
+
+def extrair_registros_devexpress(html: str, base_url: str) -> list[dict]:
+    """Grades DevExpress (ASPxGridView), usadas pelo Fiorilli SCPI: o cabeçalho fica em
+    células ``dxgvHeader`` e as linhas em ``tr[id*=DXDataRow]``."""
+    soup = BeautifulSoup(html, "lxml")
+    registros: list[dict] = []
+    for tabela in soup.find_all("table", id=re.compile(r"DXMainTable$")):
+        cab = [h.get_text(" ", strip=True) for h in tabela.select("td[class*=dxgvHeader]")]
+        mapa = {i: mapear_campo(h) for i, h in enumerate(cab)}
+        if "objeto" not in mapa.values():
+            continue
+        for tr in tabela.find_all("tr", id=re.compile(r"DXDataRow\d+$")):
+            reg: dict[str, Any] = {}
+            for i, td in enumerate(tr.find_all("td", recursive=False)):
+                campo = mapa.get(i)
+                if campo and not reg.get(campo):
+                    reg[campo] = td.get_text(" ", strip=True)
+            if reg.get("objeto"):
+                reg["_links"] = links_documentos(tr, base_url)
+                registros.append(reg)
     return registros
 
 

@@ -7,6 +7,7 @@ nunca interrompem a pesquisa: geram um diagnóstico (``Online``,
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -23,6 +24,7 @@ from config import provedores as P
 from scrapers.keywords import classificar_areas
 from scrapers.parsers import (
     extrair_cnpj,
+    extrair_registros_devexpress,
     extrair_registros_html,
     extrair_registros_json,
     formatar_cnpj,
@@ -167,34 +169,74 @@ def coletar_generico(sessao, mun: dict, ini: date, fim: date):
         raise
 
 
+TIMEOUT_EXPORTACAO = (6, 120)
+
+# Campos do export JSON da tela "Contratos" do Fiorilli SCPI (InformacoesContratos.ASPX).
+_CAMPOS_FIORILLI = {
+    "numero": ("CODIGO", "CONTRATONUM"),
+    "data_assinatura": ("DATAASSINATURA", "DTASSINATURA", "VIGENI"),
+    "contratada": ("FORNECEDOR", "NOMEFOR"),
+    "cnpj": ("INSMF", "CNPJ", "CPFCNPJ"),
+    "valor": ("VALCON", "VALOR", "VALORCONTRATO"),
+    "objeto": ("OBJETO_COMPLETO", "OBJETO", "OBJETOCONTRATO"),
+}
+
+
+def _registro_fiorilli(item: dict) -> dict:
+    reg: dict = {"_links": {}}
+    for campo, chaves in _CAMPOS_FIORILLI.items():
+        reg[campo] = next((item[k] for k in chaves if item.get(k) not in (None, "")), None)
+    ini_v, fim_v = parse_data(item.get("VIGENI")), parse_data(item.get("VENCIMENTO_ATUAL") or item.get("VIGENF"))
+    if ini_v or fim_v:
+        reg["vigencia"] = " a ".join(d.strftime("%d/%m/%Y") for d in (ini_v, fim_v) if d)
+    return reg
+
+
+def _form_postback(html: str, botao: str) -> dict:
+    """Monta os campos de um postback ASP.NET simulando o clique num <input type=image>."""
+    from bs4 import BeautifulSoup
+    form = BeautifulSoup(html, "lxml").find("form")
+    if form is None:
+        raise AcessoManual("Tela de contratos do Fiorilli sem formulário reconhecível.")
+    dados = {}
+    for i in form.find_all("input"):
+        if i.get("name") and i.get("type") not in ("image", "submit", "button", "checkbox", "radio"):
+            dados[i["name"]] = i.get("value", "")
+    dados[f"{botao}.x"], dados[f"{botao}.y"] = "10", "10"
+    return dados
+
+
 def coletar_fiorilli(sessao, mun: dict, ini: date, fim: date):
-    """Fiorilli SCPI 9.0 — tenta a listagem JSON (VersaoJson) e depois o HTML."""
+    """Fiorilli SCPI 9.0 (ASP.NET/DevExpress).
+
+    Fluxo real do portal: (1) abre a página inicial para criar a sessão (entidade e
+    exercício padrão); (2) carrega ``InformacoesContratos.ASPX``; (3) aciona o botão
+    "Exportar dados para .JSON", que devolve todos os contratos do exercício de uma vez
+    (a grade da tela mostra só 24 por página).
+    """
     raiz = P.raiz_fiorilli(mun["url"])
-    ano = ini.year
-    candidatos = [
-        f"{raiz}VersaoJson/Contratos/?Listagem=Contratos&Empresa=1&Exercicio={ano}"
-        f"&DiaInicioPeriodo={ini:%d}&MesInicialPeriodo={ini:%m}"
-        f"&DiaFinalPeriodo={fim:%d}&MesFinalPeriodo={fim:%m}&MostrarFornecedor=true",
-        f"{raiz}VersaoJson/Contratos/?Listagem=Contratos&Exercicio={ano}",
-    ]
-    ultimo_erro: Exception | None = None
-    for url in candidatos:
-        try:
-            r = _get(sessao, url)
-        except requests.HTTPError as exc:
-            ultimo_erro = exc
-            continue
-        dados = _resposta_json(r)
-        if dados is not None:
-            regs = extrair_registros_json(dados, raiz)
-            if regs or isinstance(dados, (list, dict)):
-                return regs, mun.get("url_contratos") or raiz, ""
+    _get(sessao, raiz)  # cria a sessão ASP.NET
+    pagina = raiz + "InformacoesContratos.ASPX"
+    r = _get(sessao, pagina)
+    if "gridContratos" not in r.text:
+        raise AcessoManual("Tela de contratos do Fiorilli não encontrada neste portal.")
+    dados = _form_postback(r.text, "ASPxPageControl1$btnExportarJSON")
+    r2 = sessao.post(pagina, data=dados, timeout=TIMEOUT_EXPORTACAO, verify=VERIFICAR_SSL)
+    r2.raise_for_status()
     try:
-        return _coletar_html(sessao, mun.get("url_contratos") or raiz, mun)
-    except requests.HTTPError:
-        if ultimo_erro:
-            raise ultimo_erro
-        raise
+        lista = json.loads(r2.content.decode("utf-8-sig"))
+    except ValueError:
+        # Exportação indisponível: lê a 1ª página da grade (24 contratos mais recentes).
+        regs = extrair_registros_devexpress(r.text, raiz)
+        if regs:
+            return regs, raiz, r.text
+        raise AcessoManual("O portal Fiorilli não liberou a exportação dos contratos.")
+    if isinstance(lista, dict):
+        lista = next((v for v in lista.values() if isinstance(v, list)), [])
+    exercicio = ini.year
+    regs = [_registro_fiorilli(i) for i in lista
+            if isinstance(i, dict) and str(i.get("ANO", exercicio)) == str(exercicio)]
+    return regs, raiz, r.text
 
 
 def coletar_dinamico(sessao, mun: dict, ini: date, fim: date):

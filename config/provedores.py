@@ -9,6 +9,7 @@ A detecção é feita em duas etapas:
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 FIORILLI = "Fiorilli SCPI 9.0"
 BETHA_CLOUD = "Betha Cloud"
@@ -70,11 +71,14 @@ def detectar_por_html(html: str | None) -> str | None:
 
 
 def raiz_fiorilli(url: str) -> str:
-    """``http://host:8079/transparencia/qualquer`` -> ``http://host:8079/transparencia/``."""
-    if "/transparencia" in url.lower():
-        idx = url.lower().index("/transparencia")
-        return url[:idx].rstrip("/") + url[idx:idx + len("/transparencia")] + "/"
-    return url.rstrip("/") + "/transparencia/"
+    """``http://host:8079/transparencia/qualquer`` -> ``http://host:8079/transparencia/``.
+
+    Procura "/transparencia" apenas no CAMINHO (o domínio pode conter
+    "transparencia.", como em transparencia.ivinhema.ms.gov.br)."""
+    p = urlsplit(url.strip())
+    m = re.search(r"/transparencia", p.path, flags=re.I)
+    caminho = (p.path[:m.end()] if m else p.path.rstrip("/") + "/transparencia") + "/"
+    return urlunsplit((p.scheme, p.netloc, caminho, "", ""))
 
 
 def url_consulta_contratos(url: str, provedor: str) -> str:

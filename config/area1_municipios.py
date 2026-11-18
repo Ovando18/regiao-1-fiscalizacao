@@ -2,7 +2,7 @@
 
 ARQUIVO GERADO AUTOMATICAMENTE por ``scripts/gerar_config_area1.py``.
 Planilha de origem: regiao_1.xlsx
-Gerado em: 18/11/2026 00:56
+Gerado em: 18/11/2026 01:18
 
 Para atualizar: substitua a planilha .xlsx na raiz do projeto e execute
     python scripts/gerar_config_area1.py

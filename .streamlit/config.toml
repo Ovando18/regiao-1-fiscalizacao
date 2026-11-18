@@ -1,0 +1,18 @@
+# Identidade visual — Área 1 de Fiscalização (Crea-MS) · cores oficiais de Mato Grosso do Sul
+[theme]
+base = "light"
+primaryColor = "#004B87"              # Azul Institucional MS
+backgroundColor = "#F4F6F9"           # Cinza-gelo
+secondaryBackgroundColor = "#FFFFFF"  # Cards / sidebar
+textColor = "#1B2A3A"
+font = "sans serif"
+
+[server]
+headless = true
+maxUploadSize = 20
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
